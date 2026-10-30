@@ -1,5 +1,6 @@
-# Gebautes Programm (wird über GitHub Releases verteilt)
+# Build output (distributed via GitHub Releases)
 *.exe
 *.pdb
-*.png
 tmp.cs
+# Local preview renders (only docs/ images are tracked)
+/*.png

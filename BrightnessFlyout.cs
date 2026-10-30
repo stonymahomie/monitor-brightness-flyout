@@ -1,13 +1,29 @@
-// Helligkeit: steuert die Helligkeit externer Monitore per DDC/CI.
-// Ohne Argumente: Symbol neben der Uhr (Linksklick = Regler, Rechtsklick = Menü).
-// CLI:  Helligkeit.exe list | <nr|all> <0-100|+n|-n>
+// Brightness Flyout: control the brightness of external monitors individually via DDC/CI.
+// No arguments: tray icon (left click = flyout with sliders, right click = menu).
+// CLI:  BrightnessFlyout.exe list | <nr|all> <0-100|+n|-n>
 using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Management;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+
+[assembly: AssemblyTitle("Brightness Flyout")]
+[assembly: AssemblyDescription("Control the brightness of external monitors via DDC/CI")]
+[assembly: AssemblyProduct("Brightness Flyout")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+
+// UI language follows Windows: German on German systems, English everywhere else.
+static class L
+{
+    static readonly bool German =
+        System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "de";
+
+    public static string T(string english, string german) { return German ? german : english; }
+}
 
 static class Native
 {
@@ -51,7 +67,7 @@ static class Native
     [DllImport("dxva2.dll")] public static extern bool SetMonitorBrightness(IntPtr h, uint value);
     [DllImport("kernel32.dll")] public static extern bool AttachConsole(int pid);
     [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int pid);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);    [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr h, int attr, ref int value, int size);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
 }
 
@@ -70,7 +86,7 @@ class Monitor
         uint min, cur, max;
         lock (gate)
         {
-            for (int i = 0; i < 3; i++) // DDC/CI antwortet manchmal erst beim zweiten Versuch
+            for (int i = 0; i < 3; i++) // DDC/CI sometimes only answers on the second try
             {
                 if (Native.GetMonitorBrightness(Handle, out min, out cur, out max) && max > min)
                 {
@@ -132,7 +148,7 @@ static class Monitors
             return true;
         }, IntPtr.Zero);
 
-        result.Sort(delegate (Monitor a, Monitor b) { return a.Left.CompareTo(b.Left); }); // links nach rechts
+        result.Sort(delegate (Monitor a, Monitor b) { return a.Left.CompareTo(b.Left); }); // left to right
         foreach (Monitor m in result) m.Read();
         return result;
     }
@@ -143,7 +159,7 @@ static class Monitors
         allocated.Clear();
     }
 
-    // Ordnet \\.\DISPLAYn dem Modellnamen aus den EDID-Daten (WmiMonitorID) zu.
+    // Maps \\.\DISPLAYn to the model name from the EDID data (WmiMonitorID).
     static string LookupName(string adapter, Dictionary<string, string> names)
     {
         Native.DISPLAY_DEVICE dd = new Native.DISPLAY_DEVICE();
@@ -186,7 +202,7 @@ static class Monitors
 
 static class Theme
 {
-    // Personalize: AppsUseLightTheme (Fenster), SystemUsesLightTheme (Taskleiste)
+    // Personalize: AppsUseLightTheme (windows), SystemUsesLightTheme (taskbar)
     public static bool Light(string value)
     {
         try
@@ -198,8 +214,8 @@ static class Theme
         catch { return true; }
     }
 
-    // Windows-Akzentfarbe in der Variante, die Windows selbst für Regler nutzt
-    // (AccentPalette: 0-2 hell, 3 Basis, 4-6 dunkel; dunkles Design -> hell, helles Design -> dunkel).
+    // Accent color in the shade Windows itself uses for sliders
+    // (AccentPalette: 0-2 light, 3 base, 4-6 dark; dark theme -> light shade, light theme -> dark shade).
     public static Color Accent(bool lightTheme)
     {
         try
@@ -216,7 +232,7 @@ static class Theme
         return lightTheme ? Color.FromArgb(0, 95, 184) : Color.FromArgb(96, 205, 255);
     }
 
-    // Sonnen-Symbol für den Infobereich, passend zur Taskleistenfarbe.
+    // Sun icon for the notification area, matching the taskbar color.
     public static Icon SunIcon()
     {
         Color c = Light("SystemUsesLightTheme") ? Color.FromArgb(32, 32, 32) : Color.White;
@@ -240,7 +256,7 @@ static class Theme
     }
 }
 
-// Windows-Schnittstellen für das halbdurchsichtige, selbst gezeichnete Popup.
+// Win32 APIs for the translucent, custom-drawn flyout.
 static class Layered
 {
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; public POINT(int x, int y) { X = x; Y = y; } }
@@ -263,7 +279,7 @@ static class Layered
     [DllImport("user32.dll")] public static extern int SetWindowCompositionAttribute(IntPtr h, ref WINCOMPATTRDATA data);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
 
-    // Fertiges Bild (mit Alphakanal) an Position pos mit Gesamt-Deckkraft alpha anzeigen.
+    // Show a finished image (with alpha channel) at pos with overall opacity alpha.
     public static void Push(IntPtr hwnd, Bitmap bmp, Point pos, byte alpha)
     {
         IntPtr screen = GetDC(IntPtr.Zero);
@@ -287,7 +303,7 @@ static class Layered
         }
     }
 
-    // Unschärfe hinter dem Fenster (wie bei Windows-Flyouts).
+    // Blur behind the window (like the Windows flyouts).
     public static void EnableBlur(IntPtr hwnd)
     {
         ACCENT_POLICY accent = new ACCENT_POLICY();
@@ -307,24 +323,24 @@ static class Layered
     }
 }
 
-// Aufklappfenster im Stil der Windows-11-Schnelleinstellungen:
-// abgerundet, halbdurchsichtig, fliegt von unten ein. Alles selbst gezeichnet.
+// Flyout styled like the Windows 11 quick settings:
+// rounded, translucent, slides in from below. Everything is drawn by hand.
 class BrightnessPanel : Form
 {
     const int RowH = 58, Header = 46, SepH = 9, Pad = 16, Radius = 8, Slide = 40, AnimMs = 260;
 
     readonly List<Monitor> monitors;
-    readonly int[] values;   // [0] = Alle, [i+1] = Monitor i
+    readonly int[] values;   // [0] = all monitors, [i+1] = monitor i
     readonly bool[] enabled;
     readonly System.Windows.Forms.Timer[] debounce;
     readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer();
     readonly bool light;
     readonly Color accent;
-    readonly float s; // DPI-Faktor
+    readonly float s; // DPI scale
     readonly int W, H;
     readonly Font fTitle, fLabel, fValue, fIcon;
     Point target, pos;
-    int visibleBottom = int.MaxValue; // Unterkante des Arbeitsbereichs: darunter wird abgeschnitten
+    int visibleBottom = int.MaxValue; // bottom of the work area: anything below is clipped
     DateTime animStart;
     int dragRow = -1, hoverRow = -1;
     public DateTime LastHidden = DateTime.MinValue;
@@ -346,7 +362,7 @@ class BrightnessPanel : Form
         {
             int idx = i;
             System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
-            t.Interval = 120; // DDC/CI ist langsam: erst senden, wenn der Regler kurz ruht
+            t.Interval = 120; // DDC/CI is slow: only send once the slider rests briefly
             t.Tick += delegate
             {
                 t.Stop();
@@ -407,7 +423,7 @@ class BrightnessPanel : Form
         return fallback;
     }
 
-    // Abgerundete Fensterform; während der Animation alles unterhalb der Taskleisten-Kante abschneiden.
+    // Rounded window shape; during the animation, clip everything below the taskbar edge.
     void SetClip()
     {
         IntPtr round = Layered.CreateRoundRectRgn(0, 0, W + 1, H + 1, S(Radius * 2), S(Radius * 2));
@@ -418,10 +434,10 @@ class BrightnessPanel : Form
             Layered.CombineRgn(round, round, cut, 1); // RGN_AND
             Layered.DeleteObject(cut);
         }
-        Layered.SetWindowRgn(Handle, round, true); // Windows übernimmt die Region
+        Layered.SetWindowRgn(Handle, round, true); // Windows takes ownership of the region
     }
 
-    // ---------- Daten ----------
+    // ---------- Data ----------
 
     public void SyncFromModel()
     {
@@ -472,7 +488,7 @@ class BrightnessPanel : Form
 
     void Changed() { if (ValuesChanged != null) ValuesChanged(this, EventArgs.Empty); }
 
-    // ---------- Anzeigen / Animation ----------
+    // ---------- Show / animation ----------
 
     public void ShowNearTray()
     {
@@ -484,7 +500,7 @@ class BrightnessPanel : Form
         SetClip();
         Render(0);
         Show();
-        // Direkt nach ganz oben legen; TopMost allein greift nicht zuverlässig.
+        // Force to the very top; TopMost alone is not reliable here.
         Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
         Native.SetForegroundWindow(Handle);
         Activate();
@@ -496,7 +512,7 @@ class BrightnessPanel : Form
     void AnimStep()
     {
         double t = Math.Min(1.0, (DateTime.Now - animStart).TotalMilliseconds / AnimMs);
-        double eased = 1 - Math.Pow(1 - t, 3); // schnell starten, sanft abbremsen
+        double eased = 1 - Math.Pow(1 - t, 3); // fast start, gentle stop
         pos = new Point(target.X, target.Y + (int)Math.Round(S(Slide) * (1 - eased)));
         SetClip();
         Render((byte)(255 * Math.Min(1.0, t * 1.8)));
@@ -514,7 +530,7 @@ class BrightnessPanel : Form
 
     void Redraw() { if (IsHandleCreated && Visible && !anim.Enabled) Render(255); }
 
-    // ---------- Zeichnen ----------
+    // ---------- Drawing ----------
 
     int RowTop(int i) { return S(Header + i * RowH + (i >= 1 ? SepH : 0)); }
     int TrackX0 { get { return S(Pad + 34); } }
@@ -526,38 +542,36 @@ class BrightnessPanel : Form
         using (Bitmap b = Draw()) Layered.Push(Handle, b, pos, alpha);
     }
 
-    // Zum Prüfen ohne Bildschirm: Helligkeit.exe --render datei.png
+    // For checking the look without a screen: BrightnessFlyout.exe --render file.png
     public void SaveImage(string file) { using (Bitmap b = Draw()) b.Save(file); }
 
     Bitmap Draw()
     {
         Bitmap b = new Bitmap(W, H, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        using (Graphics g = Graphics.FromImage(b))
         {
-            using (Graphics g = Graphics.FromImage(b))
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            g.Clear(Color.Transparent);
+
+            Color bg = light ? Color.FromArgb(215, 243, 243, 243) : Color.FromArgb(200, 38, 38, 38);
+            Color border = light ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(40, 255, 255, 255);
+            Color fg = light ? Color.FromArgb(26, 26, 26) : Color.White;
+
+            using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(0.5f, 0.5f, W - 1, H - 1, S(Radius)))
             {
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                g.Clear(Color.Transparent);
-
-                Color bg = light ? Color.FromArgb(215, 243, 243, 243) : Color.FromArgb(200, 38, 38, 38);
-                Color border = light ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(40, 255, 255, 255);
-                Color fg = light ? Color.FromArgb(26, 26, 26) : Color.White;
-
-                using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(0.5f, 0.5f, W - 1, H - 1, S(Radius)))
-                {
-                    using (SolidBrush br = new SolidBrush(bg)) g.FillPath(br, p);
-                    using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
-                }
-
-                using (SolidBrush br = new SolidBrush(fg))
-                    g.DrawString("Helligkeit", fTitle, br, S(Pad) - S(1), S(14));
-
-                int sepY = S(Header + RowH + SepH / 2.0);
-                using (Pen pen = new Pen(light ? Color.FromArgb(22, 0, 0, 0) : Color.FromArgb(26, 255, 255, 255), 1f))
-                    g.DrawLine(pen, S(Pad), sepY, W - S(Pad), sepY);
-
-                for (int i = 0; i < values.Length; i++) DrawRow(g, i, fg);
+                using (SolidBrush br = new SolidBrush(bg)) g.FillPath(br, p);
+                using (Pen pen = new Pen(border, 1f)) g.DrawPath(pen, p);
             }
+
+            using (SolidBrush br = new SolidBrush(fg))
+                g.DrawString(L.T("Brightness", "Helligkeit"), fTitle, br, S(Pad) - S(1), S(14));
+
+            int sepY = S(Header + RowH + SepH / 2.0);
+            using (Pen pen = new Pen(light ? Color.FromArgb(22, 0, 0, 0) : Color.FromArgb(26, 255, 255, 255), 1f))
+                g.DrawLine(pen, S(Pad), sepY, W - S(Pad), sepY);
+
+            for (int i = 0; i < values.Length; i++) DrawRow(g, i, fg);
         }
         return b;
     }
@@ -571,16 +585,17 @@ class BrightnessPanel : Form
         float cy = TrackY(i);
         int x0 = TrackX0, x1 = TrackX1;
 
-        string label = i == 0 ? "Alle Monitore" : i + "   " + monitors[i - 1].Name;
+        string label = i == 0 ? L.T("All monitors", "Alle Monitore") : i + "   " + monitors[i - 1].Name;
         using (SolidBrush br = new SolidBrush(fg2)) g.DrawString(label, fLabel, br, S(Pad) - S(1), top + S(6));
 
+        // Icons from Segoe Fluent Icons: E706 = brightness, E7F4 = monitor
         StringFormat center = new StringFormat();
         center.Alignment = StringAlignment.Center;
         center.LineAlignment = StringAlignment.Center;
         using (SolidBrush br = new SolidBrush(en ? fg : fg2))
-            g.DrawString(i == 0 ? "" : "", fIcon, br, new RectangleF(S(Pad) - S(2), cy - S(13), S(26), S(26)), center);
+            g.DrawString(i == 0 ? "\uE706" : "\uE7F4", fIcon, br, new RectangleF(S(Pad) - S(2), cy - S(13), S(26), S(26)), center);
 
-        // Schiene + gefüllter Teil in Akzentfarbe
+        // Rail + filled part in the accent color
         float th = S(4);
         float xv = x0 + (x1 - x0) * values[i] / 100f;
         using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(x0, cy - th / 2, x1 - x0, th, th / 2))
@@ -589,7 +604,7 @@ class BrightnessPanel : Form
             using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(x0, cy - th / 2, xv - x0, th, th / 2))
             using (SolidBrush br = new SolidBrush(accent)) g.FillPath(br, p);
 
-        // Knopf: äußerer Ring, innerer Punkt wächst bei Hover, schrumpft beim Ziehen
+        // Thumb: outer ring; inner dot grows on hover and shrinks while dragging
         float ro = S(10);
         float ri = dragRow == i ? S(5) : hoverRow == i && en ? S(7.5) : S(6);
         using (SolidBrush br = new SolidBrush(light ? Color.White : Color.FromArgb(69, 69, 69)))
@@ -607,8 +622,8 @@ class BrightnessPanel : Form
             if (en)
                 g.DrawString(values[i] + " %", fValue, br,
                     new RectangleF(x1 + S(8), cy - S(12), W - S(Pad) - x1 - S(8), S(24)), right);
-            else // Hinweis rechts in der Namenszeile, damit er nicht umbricht
-                g.DrawString("kein DDC/CI", fLabel, br,
+            else // note goes right-aligned on the name line so it doesn't wrap
+                g.DrawString(L.T("no DDC/CI", "kein DDC/CI"), fLabel, br,
                     new RectangleF(S(Pad), top + S(4), W - S(Pad * 2), S(22)), right);
         }
     }
@@ -626,7 +641,7 @@ class BrightnessPanel : Form
         return p;
     }
 
-    // ---------- Maus / Tastatur ----------
+    // ---------- Mouse / keyboard ----------
 
     int HitRow(Point p, bool anyX)
     {
@@ -689,12 +704,14 @@ class BrightnessPanel : Form
     }
 }
 
-// Läuft im Infobereich: Linksklick = Regler, Rechtsklick = Menü.
+// Lives in the notification area: left click = flyout, right click = menu.
 class TrayApp : ApplicationContext
 {
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    const string RunValue = "BrightnessFlyout";
+    const string OldRunValue = "Helligkeit"; // name used before v1.1.0
     readonly NotifyIcon icon = new NotifyIcon();
-    readonly Control invoker = new Control(); // für Aufrufe aus anderen Threads
+    readonly Control invoker = new Control(); // for calls from other threads
     readonly ToolStripMenuItem autostart;
     List<Monitor> monitors;
     BrightnessPanel panel;
@@ -702,25 +719,26 @@ class TrayApp : ApplicationContext
     public TrayApp(bool showPanel, EventWaitHandle showSignal)
     {
         invoker.CreateControl();
+        MigrateAutostart();
         monitors = Monitors.Load();
         BuildPanel();
 
         ContextMenuStrip menu = new ContextMenuStrip();
-        ToolStripItem open = menu.Items.Add("Helligkeit öffnen", null, delegate { panel.ShowNearTray(); });
+        ToolStripItem open = menu.Items.Add(L.T("Open brightness", "Helligkeit öffnen"), null, delegate { panel.ShowNearTray(); });
         open.Font = new Font(open.Font, FontStyle.Bold);
         menu.Items.Add(new ToolStripSeparator());
         foreach (int p in new int[] { 100, 75, 50, 25 })
         {
             int preset = p;
-            menu.Items.Add("Alle auf " + p + " %", null, delegate { SetAll(preset); });
+            menu.Items.Add(L.T("All to ", "Alle auf ") + p + " %", null, delegate { SetAll(preset); });
         }
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Monitore neu erkennen", null, delegate { Reload(); });
-        autostart = new ToolStripMenuItem("Mit Windows starten", null, delegate { ToggleAutostart(); });
+        menu.Items.Add(L.T("Re-detect monitors", "Monitore neu erkennen"), null, delegate { Reload(); });
+        autostart = new ToolStripMenuItem(L.T("Start with Windows", "Mit Windows starten"), null, delegate { ToggleAutostart(); });
         autostart.Checked = AutostartEnabled();
         menu.Items.Add(autostart);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Beenden", null, delegate { Quit(); });
+        menu.Items.Add(L.T("Exit", "Beenden"), null, delegate { Quit(); });
 
         icon.Icon = Theme.SunIcon();
         icon.ContextMenuStrip = menu;
@@ -728,7 +746,7 @@ class TrayApp : ApplicationContext
         icon.Visible = true;
         UpdateTooltip();
 
-        // Zweiter Programmstart -> vorhandenes Fenster zeigen statt neu starten.
+        // A second launch shows the flyout of the running instance instead of starting again.
         Thread waiter = new Thread(delegate ()
         {
             while (showSignal.WaitOne())
@@ -744,13 +762,13 @@ class TrayApp : ApplicationContext
     {
         panel = new BrightnessPanel(monitors);
         panel.ValuesChanged += delegate { UpdateTooltip(); };
-        IntPtr h = panel.Handle; // Fenster-Handle jetzt anlegen, damit BeginInvoke funktioniert
+        IntPtr h = panel.Handle; // create the window handle now so BeginInvoke works
     }
 
     void TogglePanel()
     {
         if (panel.Visible) { panel.Hide(); return; }
-        // Klick aufs Symbol nimmt dem offenen Fenster den Fokus -> es schließt sich gerade erst.
+        // Clicking the icon takes focus from the open flyout -> it has only just closed itself.
         if ((DateTime.Now - panel.LastHidden).TotalMilliseconds < 300) return;
         panel.ShowNearTray();
     }
@@ -776,24 +794,37 @@ class TrayApp : ApplicationContext
 
     void UpdateTooltip()
     {
-        string text = "Helligkeit";
+        string text = L.T("Brightness", "Helligkeit");
         for (int i = 0; i < monitors.Count; i++)
             if (monitors[i].Supported) text += "\n" + (i + 1) + ": " + monitors[i].Percent + " %";
-        icon.Text = text.Length > 63 ? text.Substring(0, 63) : text; // Windows-Limit
+        icon.Text = text.Length > 63 ? text.Substring(0, 63) : text; // Windows limit
     }
 
     static bool AutostartEnabled()
     {
         using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-            return k != null && k.GetValue("Helligkeit") != null;
+            return k != null && k.GetValue(RunValue) != null;
+    }
+
+    static string AutostartCommand() { return "\"" + Application.ExecutablePath + "\" --autostart"; }
+
+    // Before v1.1.0 the autostart entry was called "Helligkeit": move it to the new name and path.
+    static void MigrateAutostart()
+    {
+        using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
+        {
+            if (k.GetValue(OldRunValue) == null) return;
+            k.DeleteValue(OldRunValue, false);
+            k.SetValue(RunValue, AutostartCommand());
+        }
     }
 
     void ToggleAutostart()
     {
         using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
         {
-            if (AutostartEnabled()) k.DeleteValue("Helligkeit", false);
-            else k.SetValue("Helligkeit", "\"" + Application.ExecutablePath + "\" --autostart");
+            if (AutostartEnabled()) k.DeleteValue(RunValue, false);
+            else k.SetValue(RunValue, AutostartCommand());
         }
         autostart.Checked = AutostartEnabled();
     }
@@ -812,8 +843,9 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length == 2 && args[0] == "--render")
+        if (args.Length >= 2 && args[0] == "--render") // --render file.png [culture, e.g. en-US]
         {
+            if (args.Length >= 3) Thread.CurrentThread.CurrentUICulture = new System.Globalization.CultureInfo(args[2]);
             Layered.SetProcessDPIAware();
             BrightnessPanel p = new BrightnessPanel(Monitors.Load());
             p.SaveImage(args[1]);
@@ -822,15 +854,15 @@ static class Program
         }
         bool autostart = args.Length == 1 && args[0] == "--autostart";
         if (args.Length > 0 && !autostart) return Cli(args);
-        Layered.SetProcessDPIAware(); // scharfe Darstellung bei Windows-Skalierung
+        Layered.SetProcessDPIAware(); // sharp rendering with Windows display scaling
 
         bool first;
-        using (Mutex mutex = new Mutex(true, @"Local\Helligkeit.Tray", out first))
-        using (EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\Helligkeit.Show"))
+        using (Mutex mutex = new Mutex(true, @"Local\BrightnessFlyout.Tray", out first))
+        using (EventWaitHandle show = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\BrightnessFlyout.Show"))
         {
             if (!first)
             {
-                // läuft schon -> nur Fenster zeigen; dem laufenden Programm den Vordergrund erlauben
+                // Already running -> just show the flyout; allow the running instance to take the foreground.
                 Native.AllowSetForegroundWindow(-1);
                 show.Set();
                 return 0;
@@ -843,8 +875,9 @@ static class Program
 
     static int Cli(string[] args)
     {
-        Native.AttachConsole(-1); // Ausgabe im aufrufenden Terminal anzeigen
+        Native.AttachConsole(-1); // print to the calling terminal
         Console.WriteLine();
+        string usage = L.T("Usage", "Nutzung") + ": BrightnessFlyout.exe <nr|all> <0-100 | +n | -n>";
         List<Monitor> monitors = Monitors.Load();
         try
         {
@@ -853,13 +886,13 @@ static class Program
                 for (int i = 0; i < monitors.Count; i++)
                 {
                     Monitor m = monitors[i];
-                    Console.WriteLine("{0}  {1,-28} {2}", i + 1, m.Name, m.Supported ? m.Percent + " %" : "kein DDC/CI");
+                    Console.WriteLine("{0}  {1,-28} {2}", i + 1, m.Name, m.Supported ? m.Percent + " %" : L.T("no DDC/CI", "kein DDC/CI"));
                 }
                 Console.WriteLine();
-                Console.WriteLine("Nutzung: Helligkeit.exe <nr|all> <0-100 | +n | -n>");
+                Console.WriteLine(usage);
                 return 0;
             }
-            if (args.Length < 2) { Console.WriteLine("Nutzung: Helligkeit.exe <nr|all> <0-100 | +n | -n>"); return 1; }
+            if (args.Length < 2) { Console.WriteLine(usage); return 1; }
 
             List<Monitor> targets = new List<Monitor>();
             if (args[0].ToLowerInvariant() == "all") targets.AddRange(monitors);
@@ -867,22 +900,25 @@ static class Program
             {
                 int nr;
                 if (!int.TryParse(args[0], out nr) || nr < 1 || nr > monitors.Count)
-                { Console.WriteLine("Unbekannter Monitor: " + args[0] + " (siehe 'list')"); return 1; }
+                {
+                    Console.WriteLine(L.T("Unknown monitor: ", "Unbekannter Monitor: ") + args[0] + L.T(" (see 'list')", " (siehe 'list')"));
+                    return 1;
+                }
                 targets.Add(monitors[nr - 1]);
             }
 
             string val = args[1];
             bool relative = val.StartsWith("+") || val.StartsWith("-");
             int n;
-            if (!int.TryParse(val, out n)) { Console.WriteLine("Ungültiger Wert: " + val); return 1; }
+            if (!int.TryParse(val, out n)) { Console.WriteLine(L.T("Invalid value: ", "Ungültiger Wert: ") + val); return 1; }
 
             int rc = 0;
             foreach (Monitor m in targets)
             {
-                if (!m.Supported) { Console.WriteLine(m.Name + ": kein DDC/CI"); rc = 2; continue; }
+                if (!m.Supported) { Console.WriteLine(m.Name + ": " + L.T("no DDC/CI", "kein DDC/CI")); rc = 2; continue; }
                 int target = Math.Max(0, Math.Min(100, relative ? m.Percent + n : n));
                 bool ok = m.Set(target);
-                Console.WriteLine("{0}: {1}", m.Name, ok ? target + " %" : "Fehler beim Setzen");
+                Console.WriteLine("{0}: {1}", m.Name, ok ? target + " %" : L.T("failed to set", "Fehler beim Setzen"));
                 if (!ok) rc = 2;
             }
             return rc;

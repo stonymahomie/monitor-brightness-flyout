@@ -19,6 +19,7 @@ Windows only has a brightness slider for built-in laptop screens. This tool talk
 
 - **Tray icon + Windows 11 style flyout:** rounded corners, translucent blurred background, slide-in animation and sliders in your Windows accent color
 - **One slider per monitor** plus an "All monitors" slider; mouse wheel adjusts by ±2 %
+- **Type an exact value:** click the percentage, type a number, press Enter
 - **Plug and play:** monitors that are plugged in, unplugged or switched on are picked up automatically
 - **Command line** for scripts, hotkeys and scheduled tasks
 - **Start with Windows** from the tray menu
@@ -39,6 +40,7 @@ Run `BrightnessFlyout.exe`. A sun icon appears in the notification area (on Wind
 |---|---|
 | Left click on the icon | Open the flyout with the sliders |
 | Mouse wheel over a slider | ±2 % |
+| Click on the percentage | Type a value (0–100): `Enter` applies, `Esc` cancels, `↑`/`↓` ±1; clicking elsewhere also applies |
 | `Esc` or click outside | Close the flyout |
 | Right click on the icon | All to 100/75/50/25 %, re-detect monitors, start with Windows, exit |
 

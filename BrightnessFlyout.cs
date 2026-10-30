@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Brightness Flyout")]
 [assembly: AssemblyDescription("Control the brightness of external monitors via DDC/CI")]
 [assembly: AssemblyProduct("Brightness Flyout")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 // UI language follows Windows: German on German systems, English everywhere else.
 static class L
@@ -386,6 +386,11 @@ class BrightnessPanel : Form
     int H;
     bool showHint;  // a monitor without DDC/CI and the hint wasn't dismissed for this set of monitors
     bool hoverClose;
+    // Typing a value: click the percentage to turn it into a small text box
+    readonly System.Windows.Forms.Timer caret = new System.Windows.Forms.Timer();
+    int editRow = -1, hoverValue = -1;
+    string editText = "";
+    bool editAll, caretOn; // editAll = whole number selected, the next digit replaces it
     readonly Font fTitle, fLabel, fValue, fIcon;
     Point target, pos;
     int visibleBottom = int.MaxValue; // bottom of the work area: anything below is clipped
@@ -443,6 +448,8 @@ class BrightnessPanel : Form
 
         anim.Interval = 10;
         anim.Tick += delegate { AnimStep(); };
+        caret.Interval = 530; // Windows caret blink rate
+        caret.Tick += delegate { caretOn = !caretOn; Redraw(); };
         Deactivate += delegate { ClosePanel(); };
 
         SyncFromModel();
@@ -574,6 +581,7 @@ class BrightnessPanel : Form
     void ClosePanel()
     {
         if (!Visible) return;
+        CommitEdit(); // a typed value is applied, like a text box losing focus
         anim.Stop();
         dragRow = -1; hoverRow = -1;
         Hide();
@@ -586,8 +594,11 @@ class BrightnessPanel : Form
 
     int RowTop(int i) { return S(Header + i * RowH + (i >= 1 ? SepH : 0)); }
     int TrackX0 { get { return S(Pad + 34); } }
-    int TrackX1 { get { return W - S(Pad + 54); } }
+    int TrackX1 { get { return W - S(Pad + 64); } }
     int TrackY(int i) { return RowTop(i) + S(38); }
+
+    // Clickable percentage / text box area right of the slider.
+    Rectangle ValueRect(int i) { return new Rectangle(TrackX1 + S(12), TrackY(i) - S(14), W - S(Pad) - TrackX1 - S(12), S(28)); }
 
     void Render(byte alpha)
     {
@@ -686,6 +697,7 @@ class BrightnessPanel : Form
         if (disposing)
         {
             anim.Stop();
+            caret.Stop();
             foreach (System.Windows.Forms.Timer t in debounce) t.Stop();
         }
         base.Dispose(disposing);
@@ -732,14 +744,59 @@ class BrightnessPanel : Form
         StringFormat right = new StringFormat();
         right.Alignment = StringAlignment.Far;
         right.LineAlignment = StringAlignment.Center;
+        if (en && editRow == i) { DrawEditBox(g, i, fg, fg2); return; }
+
+        Rectangle vr = ValueRect(i);
+        if (en && hoverValue == i) // hint that the number can be clicked
+            using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(vr.X, vr.Y, vr.Width, vr.Height, S(4)))
+            using (SolidBrush br = new SolidBrush(light ? Color.FromArgb(14, 0, 0, 0) : Color.FromArgb(18, 255, 255, 255)))
+                g.FillPath(br, p);
+
         using (SolidBrush br = new SolidBrush(en ? fg : fg2))
         {
             if (en)
                 g.DrawString(values[i] + " %", fValue, br,
-                    new RectangleF(x1 + S(8), cy - S(12), W - S(Pad) - x1 - S(8), S(24)), right);
+                    new RectangleF(vr.X, vr.Y, vr.Width - S(7), vr.Height), right);
             else // note goes right-aligned on the name line so it doesn't wrap
                 g.DrawString(L.T("no DDC/CI", "kein DDC/CI"), fLabel, br,
                     new RectangleF(S(Pad), top + S(4), W - S(Pad * 2), S(22)), right);
+        }
+    }
+
+    // Windows 11 style text box: filled background, thin border, accent line at the bottom.
+    void DrawEditBox(Graphics g, int i, Color fg, Color fg2)
+    {
+        Rectangle vr = ValueRect(i);
+        using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(vr.X + 0.5f, vr.Y + 0.5f, vr.Width - 1, vr.Height - 1, S(4)))
+        {
+            using (SolidBrush br = new SolidBrush(light ? Color.White : Color.FromArgb(31, 31, 31))) g.FillPath(br, p);
+            using (Pen pen = new Pen(light ? Color.FromArgb(40, 0, 0, 0) : Color.FromArgb(35, 255, 255, 255), 1f)) g.DrawPath(pen, p);
+        }
+        using (SolidBrush br = new SolidBrush(accent))
+            g.FillRectangle(br, vr.X + S(1), vr.Bottom - S(2), vr.Width - S(2), S(2));
+
+        StringFormat tf = (StringFormat)StringFormat.GenericTypographic.Clone();
+        tf.FormatFlags |= StringFormatFlags.MeasureTrailingSpaces;
+        float th = fValue.GetHeight(g);
+        float ty = TrackY(i) - th / 2;
+        string pct = " %";
+        float pw = g.MeasureString(pct, fValue, PointF.Empty, tf).Width;
+        float dw = editText.Length == 0 ? 0 : g.MeasureString(editText, fValue, PointF.Empty, tf).Width;
+        float right = vr.Right - S(7) - pw;
+        float dx = right - dw;
+
+        using (SolidBrush br = new SolidBrush(fg2)) g.DrawString(pct, fValue, br, right, ty, tf);
+        if (editAll && dw > 0) // selected number: accent background like a text selection
+        {
+            using (SolidBrush br = new SolidBrush(accent)) g.FillRectangle(br, dx - S(1), ty, dw + S(2), th);
+            using (SolidBrush br = new SolidBrush(light ? Color.White : Color.Black)) g.DrawString(editText, fValue, br, dx, ty, tf);
+        }
+        else
+        {
+            using (SolidBrush br = new SolidBrush(fg)) g.DrawString(editText, fValue, br, dx, ty, tf);
+            if (caretOn)
+                using (Pen pen = new Pen(fg, Math.Max(1f, s)))
+                    g.DrawLine(pen, right + S(1), ty + S(2), right + S(1), ty + th - S(2));
         }
     }
 
@@ -778,6 +835,13 @@ class BrightnessPanel : Form
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        int v = HitValue(e.Location);
+        if (editRow >= 0)
+        {
+            if (v == editRow) { editAll = true; Redraw(); return; } // click into the box again: select all
+            CommitEdit();
+        }
+        if (v >= 0) { BeginEdit(v); return; }
         if (showHint && CloseRect.Contains(e.Location)) { DismissHint(); return; }
         int r = HitRow(e.Location, false);
         if (r >= 0 && enabled[r]) { dragRow = r; Capture = true; SetFromX(r, e.X); }
@@ -787,9 +851,15 @@ class BrightnessPanel : Form
     {
         base.OnMouseMove(e);
         if (dragRow >= 0) { SetFromX(dragRow, e.X); return; }
-        int r = HitRow(e.Location, false);
+        int hv = HitValue(e.Location);
+        int r = hv >= 0 ? -1 : HitRow(e.Location, false);
         bool hc = showHint && CloseRect.Contains(e.Location);
-        if (r != hoverRow || hc != hoverClose) { hoverRow = r; hoverClose = hc; Redraw(); }
+        Cursor = hv >= 0 ? Cursors.IBeam : Cursors.Default;
+        if (r != hoverRow || hc != hoverClose || hv != hoverValue)
+        {
+            hoverRow = r; hoverClose = hc; hoverValue = hv;
+            Redraw();
+        }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -804,19 +874,116 @@ class BrightnessPanel : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if ((hoverRow >= 0 || hoverClose) && dragRow < 0) { hoverRow = -1; hoverClose = false; Redraw(); }
+        if ((hoverRow >= 0 || hoverClose || hoverValue >= 0) && dragRow < 0)
+        {
+            hoverRow = -1; hoverClose = false; hoverValue = -1;
+            Redraw();
+        }
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
+        CommitEdit();
         int r = HitRow(e.Location, true);
         if (r >= 0 && enabled[r]) SetRow(r, values[r] + (e.Delta > 0 ? 2 : -2));
+    }
+
+    // ---------- Typing a value ----------
+
+    int HitValue(Point p)
+    {
+        for (int i = 0; i < values.Length; i++)
+            if (enabled[i] && ValueRect(i).Contains(p)) return i;
+        return -1;
+    }
+
+    void BeginEdit(int row)
+    {
+        editRow = row;
+        editText = values[row].ToString();
+        editAll = true;
+        caretOn = true;
+        caret.Stop(); caret.Start();
+        Redraw();
+    }
+
+    void EndEdit()
+    {
+        editRow = -1;
+        caret.Stop();
+    }
+
+    // Apply the typed number (clamped to 0-100). Empty input changes nothing.
+    void CommitEdit()
+    {
+        if (editRow < 0) return;
+        int row = editRow, v;
+        string text = editText;
+        EndEdit();
+        if (int.TryParse(text, out v)) SetRow(row, v);
+        else Redraw();
+    }
+
+    void EditKeepsCaretVisible() { caretOn = true; caret.Stop(); caret.Start(); Redraw(); }
+
+    // Arrow keys would otherwise be used for focus navigation and never reach OnKeyDown.
+    protected override bool IsInputKey(Keys keyData)
+    {
+        if (editRow >= 0 && (keyData == Keys.Up || keyData == Keys.Down)) return true;
+        return base.IsInputKey(keyData);
+    }
+
+    protected override bool ProcessDialogKey(Keys keyData)
+    {
+        if (editRow >= 0 && (keyData == Keys.Up || keyData == Keys.Down))
+        {
+            OnKeyDown(new KeyEventArgs(keyData));
+            return true;
+        }
+        return base.ProcessDialogKey(keyData);
+    }
+
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        base.OnKeyPress(e);
+        if (editRow < 0 || !char.IsDigit(e.KeyChar)) return;
+        e.Handled = true;
+        if (editAll) { editText = ""; editAll = false; }
+        if (editText.Length < 3) editText += e.KeyChar;
+        EditKeepsCaretVisible();
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
+        if (editRow >= 0)
+        {
+            int cur;
+            switch (e.KeyCode)
+            {
+                case Keys.Enter: CommitEdit(); break;
+                case Keys.Escape: EndEdit(); Redraw(); break; // cancel typing, keep the flyout open
+                case Keys.Back:
+                    editText = editAll || editText.Length == 0 ? "" : editText.Substring(0, editText.Length - 1);
+                    editAll = false;
+                    EditKeepsCaretVisible();
+                    break;
+                case Keys.Delete: editText = ""; editAll = false; EditKeepsCaretVisible(); break;
+                case Keys.Up:
+                case Keys.Down:
+                    if (!int.TryParse(editText, out cur)) cur = values[editRow];
+                    cur = Math.Max(0, Math.Min(100, cur + (e.KeyCode == Keys.Up ? 1 : -1)));
+                    editText = cur.ToString();
+                    editAll = false;
+                    EditKeepsCaretVisible();
+                    break;
+                default: return; // digits arrive in OnKeyPress
+            }
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
         if (e.KeyCode == Keys.Escape) ClosePanel();
     }
 }

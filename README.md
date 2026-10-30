@@ -57,7 +57,7 @@ Monitors are numbered from left to right.
 
 ## Enabling DDC/CI
 
-The app can only control monitors that have **DDC/CI** switched on. A monitor without it shows **"no DDC/CI"** and a locked slider, and the flyout shows a short hint.
+The app can only control monitors that have **DDC/CI** switched on. A monitor without it shows **"no DDC/CI"** and a locked slider, and the flyout shows a short hint. Click **×** to hide the hint for good; it only comes back when a monitor is connected that wasn't there when you dismissed it.
 
 1. Open your monitor's own on-screen menu with the buttons or joystick on the monitor.
 2. Look for an option called **DDC/CI**, **DDC**, **External control** or similar. It's usually under *System*, *Setup*, *Other* or *General*.
@@ -92,6 +92,7 @@ This calls the built-in compiler (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
 - **Plug and play:** `SystemEvents.DisplaySettingsChanged`, then the monitor list is reloaded after a 2 second delay
 - **Flyout:** drawn entirely with GDI+ into a layered window (`UpdateLayeredWindow`), blur via `SetWindowCompositionAttribute`, accent color from `AccentPalette`
 - **Autostart:** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `BrightnessFlyout`
+- **Dismissed hint:** hardware ids of the monitors connected at that moment, stored in `HKCU\Software\BrightnessFlyout`, value `HintDismissedFor`
 
 ## Built with Claude
 

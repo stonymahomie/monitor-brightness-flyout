@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Brightness Flyout")]
 [assembly: AssemblyDescription("Control the brightness of external monitors via DDC/CI")]
 [assembly: AssemblyProduct("Brightness Flyout")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.3.0.0")]
+[assembly: AssemblyFileVersion("1.3.0.0")]
 
 // UI language follows Windows: German on German systems, English everywhere else.
 static class L
@@ -73,6 +73,7 @@ static class Native
 
 class Monitor
 {
+    public string Id;   // stable hardware id, e.g. DISPLAY\VSCD73A\5&1B33B6&0&UID24834
     public string Name;
     public IntPtr Handle;
     public int Left;
@@ -136,13 +137,15 @@ static class Monitors
             if (!Native.GetPhysicalMonitorsFromHMONITOR(hMon, count, phys)) return true;
             allocated.Add(phys);
 
-            string name = LookupName(info.szDevice, names);
+            string key = DeviceKey(info.szDevice);
+            string name = LookupName(key, names);
             for (int i = 0; i < count; i++)
             {
                 Monitor m = new Monitor();
                 m.Handle = phys[i].hPhysicalMonitor;
                 m.Left = info.rcMonitor.Left;
                 m.Name = name ?? phys[i].szPhysicalMonitorDescription;
+                m.Id = (key ?? m.Name) + (count > 1 ? "#" + i : "");
                 result.Add(m);
             }
             return true;
@@ -159,8 +162,8 @@ static class Monitors
         allocated.Clear();
     }
 
-    // Maps \\.\DISPLAYn to the model name from the EDID data (WmiMonitorID).
-    static string LookupName(string adapter, Dictionary<string, string> names)
+    // Hardware id of the monitor on adapter \\.\DISPLAYn, e.g. DISPLAY\VSCD73A\5&1B33B6&0&UID24834.
+    static string DeviceKey(string adapter)
     {
         Native.DISPLAY_DEVICE dd = new Native.DISPLAY_DEVICE();
         dd.cb = Marshal.SizeOf(typeof(Native.DISPLAY_DEVICE));
@@ -168,7 +171,13 @@ static class Monitors
         if (!Native.EnumDisplayDevices(adapter, 0, ref dd, 1)) return null;
         string[] parts = dd.DeviceID.Split('#');
         if (parts.Length < 3) return null;
-        string key = ("DISPLAY\\" + parts[1] + "\\" + parts[2]).ToUpperInvariant();
+        return ("DISPLAY\\" + parts[1] + "\\" + parts[2]).ToUpperInvariant();
+    }
+
+    // Model name from the EDID data (WmiMonitorID) for a hardware id.
+    static string LookupName(string key, Dictionary<string, string> names)
+    {
+        if (key == null) return null;
         foreach (KeyValuePair<string, string> kv in names)
             if (kv.Key.StartsWith(key)) return kv.Value;
         return null;
@@ -197,6 +206,42 @@ static class Monitors
         System.Text.StringBuilder sb = new System.Text.StringBuilder();
         foreach (ushort c in data) if (c != 0) sb.Append((char)c);
         return sb.ToString();
+    }
+}
+
+// Remembers which monitors were connected when the DDC/CI hint was dismissed.
+// The hint comes back as soon as a monitor shows up that wasn't in that list.
+static class HintSettings
+{
+    const string Key = @"Software\BrightnessFlyout";
+    const string Value = "HintDismissedFor";
+
+    public static bool Dismissed(List<Monitor> monitors)
+    {
+        try
+        {
+            using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(Key))
+            {
+                string[] known = k == null ? null : k.GetValue(Value) as string[];
+                if (known == null) return false;
+                foreach (Monitor m in monitors)
+                    if (Array.IndexOf(known, m.Id) < 0) return false; // new monitor -> show again
+                return true;
+            }
+        }
+        catch { return false; }
+    }
+
+    public static void Dismiss(List<Monitor> monitors)
+    {
+        try
+        {
+            string[] ids = new string[monitors.Count];
+            for (int i = 0; i < ids.Length; i++) ids[i] = monitors[i].Id;
+            using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(Key))
+                k.SetValue(Value, ids, Microsoft.Win32.RegistryValueKind.MultiString);
+        }
+        catch { }
     }
 }
 
@@ -337,8 +382,10 @@ class BrightnessPanel : Form
     readonly bool light;
     readonly Color accent;
     readonly float s; // DPI scale
-    readonly int W, H;
-    readonly bool showHint; // at least one monitor without DDC/CI -> explain how to fix it
+    readonly int W;
+    int H;
+    bool showHint;  // a monitor without DDC/CI and the hint wasn't dismissed for this set of monitors
+    bool hoverClose;
     readonly Font fTitle, fLabel, fValue, fIcon;
     Point target, pos;
     int visibleBottom = int.MaxValue; // bottom of the work area: anything below is clipped
@@ -378,9 +425,10 @@ class BrightnessPanel : Form
             debounce[i] = t;
         }
 
-        showHint = monitors.Exists(delegate (Monitor m) { return !m.Supported; });
+        showHint = monitors.Exists(delegate (Monitor m) { return !m.Supported; })
+                   && !HintSettings.Dismissed(monitors);
         W = S(380);
-        H = S(Header + n * RowH + SepH + 8 + (showHint ? FooterH : 0));
+        H = PanelHeight();
         fTitle = new Font(FontOr("Segoe UI Variable Display Semib", "Segoe UI Semibold"), 11f * s, GraphicsUnit.Point);
         fLabel = new Font(FontOr("Segoe UI Variable Text", "Segoe UI"), 9f * s, GraphicsUnit.Point);
         fValue = new Font(FontOr("Segoe UI Variable Text", "Segoe UI"), 9.5f * s, GraphicsUnit.Point);
@@ -418,6 +466,8 @@ class BrightnessPanel : Form
     }
 
     int S(double v) { return (int)Math.Round(v * s); }
+
+    int PanelHeight() { return S(Header + values.Length * RowH + SepH + 8 + (showHint ? FooterH : 0)); }
 
     static string FontOr(string wanted, string fallback)
     {
@@ -579,10 +629,30 @@ class BrightnessPanel : Form
         return b;
     }
 
+    int HintTop { get { return RowTop(values.Length) + S(2); } }
+
+    // Close button of the hint, top right of the footer.
+    Rectangle CloseRect { get { return new Rectangle(W - S(Pad) - S(24), HintTop + S(8), S(24), S(24)); } }
+
+    // Hide the hint for good (until a new monitor shows up). The flyout shrinks, its bottom edge stays put.
+    void DismissHint()
+    {
+        HintSettings.Dismiss(monitors);
+        showHint = false;
+        hoverClose = false;
+        int oldH = H;
+        H = PanelHeight();
+        pos = new Point(pos.X, pos.Y + (oldH - H));
+        target = new Point(target.X, target.Y + (oldH - H));
+        Size = new Size(W, H);
+        SetClip();
+        Render(255);
+    }
+
     // Footer with a short how-to for monitors whose slider is locked.
     void DrawHint(Graphics g, Color fg)
     {
-        int top = RowTop(values.Length) + S(2);
+        int top = HintTop;
         Color fg2 = Color.FromArgb(light ? 165 : 200, fg);
         using (Pen pen = new Pen(light ? Color.FromArgb(22, 0, 0, 0) : Color.FromArgb(26, 255, 255, 255), 1f))
             g.DrawLine(pen, S(Pad), top, W - S(Pad), top);
@@ -596,8 +666,18 @@ class BrightnessPanel : Form
             g.DrawString("", fIcon, br, new RectangleF(S(Pad) - S(2), top + S(8), S(26), S(26)), center);
             g.DrawString(L.T("Locked slider: turn on DDC/CI in the monitor's own menu. Not every monitor supports it.",
                              "Gesperrter Regler: DDC/CI im Menü des Monitors einschalten. Nicht jeder Monitor kann das."),
-                fLabel, br, new RectangleF(TrackX0, top + S(6), W - TrackX0 - S(Pad), S(FooterH - 8)));
+                fLabel, br, new RectangleF(TrackX0, top + S(6), W - TrackX0 - S(Pad) - S(30), S(FooterH - 8)));
         }
+
+        // × button (E711 = cancel icon) with a subtle hover background like Windows
+        Rectangle cr = CloseRect;
+        if (hoverClose)
+            using (System.Drawing.Drawing2D.GraphicsPath p = RoundRect(cr.X, cr.Y, cr.Width, cr.Height, S(4)))
+            using (SolidBrush br = new SolidBrush(light ? Color.FromArgb(18, 0, 0, 0) : Color.FromArgb(22, 255, 255, 255)))
+                g.FillPath(br, p);
+        using (Font f = new Font(fIcon.FontFamily, 8f * s, GraphicsUnit.Point))
+        using (SolidBrush br = new SolidBrush(hoverClose ? fg : fg2))
+            g.DrawString("", f, br, cr, center);
     }
 
     protected override void Dispose(bool disposing)
@@ -698,6 +778,7 @@ class BrightnessPanel : Form
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        if (showHint && CloseRect.Contains(e.Location)) { DismissHint(); return; }
         int r = HitRow(e.Location, false);
         if (r >= 0 && enabled[r]) { dragRow = r; Capture = true; SetFromX(r, e.X); }
     }
@@ -707,7 +788,8 @@ class BrightnessPanel : Form
         base.OnMouseMove(e);
         if (dragRow >= 0) { SetFromX(dragRow, e.X); return; }
         int r = HitRow(e.Location, false);
-        if (r != hoverRow) { hoverRow = r; Redraw(); }
+        bool hc = showHint && CloseRect.Contains(e.Location);
+        if (r != hoverRow || hc != hoverClose) { hoverRow = r; hoverClose = hc; Redraw(); }
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -722,7 +804,7 @@ class BrightnessPanel : Form
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (hoverRow >= 0 && dragRow < 0) { hoverRow = -1; Redraw(); }
+        if ((hoverRow >= 0 || hoverClose) && dragRow < 0) { hoverRow = -1; hoverClose = false; Redraw(); }
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)

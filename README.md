@@ -2,6 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/stonymahomie/monitor-brightness-flyout?label=release)](https://github.com/stonymahomie/monitor-brightness-flyout/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/stonymahomie/monitor-brightness-flyout/total?color=blue)](https://github.com/stonymahomie/monitor-brightness-flyout/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?logo=windows&logoColor=white)
 ![C#](https://img.shields.io/badge/C%23-.NET%20Framework%204.x-512BD4?logo=dotnet&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
@@ -17,7 +18,8 @@ Windows only has a brightness slider for built-in laptop screens. This tool talk
 ## Features
 
 - **Tray icon + Windows 11 style flyout:** rounded corners, translucent blurred background, slide-in animation and sliders in your Windows accent color
-- **One slider per monitor** plus an "All monitors" slider; mouse wheel adjusts by Â±2 %
+- **One slider per monitor** plus an "All monitors" slider; mouse wheel adjusts by ±2 %
+- **Plug and play:** monitors that are plugged in, unplugged or switched on are picked up automatically
 - **Command line** for scripts, hotkeys and scheduled tasks
 - **Start with Windows** from the tray menu
 - **UI language follows Windows** (English, or German on German systems)
@@ -27,7 +29,7 @@ Windows only has a brightness slider for built-in laptop screens. This tool talk
 
 Grab `BrightnessFlyout.exe` from the [latest release](https://github.com/stonymahomie/monitor-brightness-flyout/releases/latest) and run it. Nothing to install.
 
-> The `.exe` is not code-signed, so Windows SmartScreen may warn on first launch. Click **More info â†’ Run anyway**, or build it yourself (see below).
+> The `.exe` is not code-signed, so Windows SmartScreen may warn on first launch. Click **More info → Run anyway**, or build it yourself (see below).
 
 ## Usage
 
@@ -36,7 +38,7 @@ Run `BrightnessFlyout.exe`. A sun icon appears in the notification area (on Wind
 | Action | Result |
 |---|---|
 | Left click on the icon | Open the flyout with the sliders |
-| Mouse wheel over a slider | Â±2 % |
+| Mouse wheel over a slider | ±2 % |
 | `Esc` or click outside | Close the flyout |
 | Right click on the icon | All to 100/75/50/25 %, re-detect monitors, start with Windows, exit |
 
@@ -53,13 +55,23 @@ BrightnessFlyout.exe 3 +10       monitor 3 10 % brighter (-10 = darker)
 
 Monitors are numbered from left to right.
 
+## Enabling DDC/CI
+
+The app can only control monitors that have **DDC/CI** switched on. A monitor without it shows **"no DDC/CI"** and a locked slider, and the flyout shows a short hint.
+
+1. Open your monitor's own on-screen menu with the buttons or joystick on the monitor.
+2. Look for an option called **DDC/CI**, **DDC**, **External control** or similar. It's usually under *System*, *Setup*, *Other* or *General*.
+3. Turn it **on**.
+4. Open the flyout again. The slider unlocks by itself, since the app asks every monitor again each time the flyout opens.
+
+**Not every monitor supports DDC/CI.** Some models don't have the option at all, some only support it on certain inputs (e.g. DisplayPort but not HDMI, or the other way round), and some docking stations, adapters and KVM switches don't pass it through. If there's no such option, try a different cable or input; otherwise that monitor can only be dimmed with its own buttons.
+
 ## Requirements and limitations
 
-- **DDC/CI must be enabled in the monitor's on-screen menu.** Monitors without it show up as "no DDC/CI" with a locked slider.
-- Some docking stations, adapters and KVM switches don't pass DDC/CI through.
-- DDC/CI is slow (about 50â€“100 ms per command), so a value is only sent once a slider rests for a moment.
+- Windows 10 or 11 with .NET Framework 4.x (included in Windows)
+- Monitors with DDC/CI turned on (see above)
+- DDC/CI is slow (about 50–100 ms per command), so a value is only sent once a slider rests for a moment.
 - Built-in laptop screens are not supported (they don't use DDC/CI).
-- Monitors plugged in while the app runs need **Re-detect monitors** from the tray menu.
 
 ## Building
 
@@ -69,7 +81,7 @@ Only needs Windows with .NET Framework 4.x (included in Windows 10 and 11):
 build.cmd
 ```
 
-This calls the built-in compiler (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`), which only supports C# 5, so the code avoids `$"â€¦"` strings and `?.`.
+This calls the built-in compiler (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe`), which only supports C# 5, so the code avoids `$"…"` strings and `?.`.
 
 `BrightnessFlyout.exe --render preview.png [en-US]` saves the flyout as an image, handy for checking the look without opening it.
 
@@ -77,6 +89,7 @@ This calls the built-in compiler (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
 
 - **Brightness:** `dxva2.dll` (`GetMonitorBrightness` / `SetMonitorBrightness`), the Windows API for DDC/CI
 - **Monitor names:** EDID data via WMI (`WmiMonitorID`)
+- **Plug and play:** `SystemEvents.DisplaySettingsChanged`, then the monitor list is reloaded after a 2 second delay
 - **Flyout:** drawn entirely with GDI+ into a layered window (`UpdateLayeredWindow`), blur via `SetWindowCompositionAttribute`, accent color from `AccentPalette`
 - **Autostart:** `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `BrightnessFlyout`
 
@@ -85,3 +98,7 @@ This calls the built-in compiler (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319
 Most of the work on this project was done by **[Claude](https://www.anthropic.com/claude)**, Anthropic's AI model, in [Claude Code](https://claude.com/claude-code): the code, the Windows 11 flyout design, the debugging and this README.
 
 [stonymahomie](https://github.com/stonymahomie) had the idea, tested everything on a real three-monitor setup and steered the design.
+
+## License
+
+[MIT](LICENSE) © 2026 stonymahomie

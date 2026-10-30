@@ -13,8 +13,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("Brightness Flyout")]
 [assembly: AssemblyDescription("Control the brightness of external monitors via DDC/CI")]
 [assembly: AssemblyProduct("Brightness Flyout")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 // UI language follows Windows: German on German systems, English everywhere else.
 static class L
@@ -327,7 +327,7 @@ static class Layered
 // rounded, translucent, slides in from below. Everything is drawn by hand.
 class BrightnessPanel : Form
 {
-    const int RowH = 58, Header = 46, SepH = 9, Pad = 16, Radius = 8, Slide = 40, AnimMs = 260;
+    const int RowH = 58, Header = 46, SepH = 9, Pad = 16, Radius = 8, Slide = 40, AnimMs = 260, FooterH = 50;
 
     readonly List<Monitor> monitors;
     readonly int[] values;   // [0] = all monitors, [i+1] = monitor i
@@ -338,6 +338,7 @@ class BrightnessPanel : Form
     readonly Color accent;
     readonly float s; // DPI scale
     readonly int W, H;
+    readonly bool showHint; // at least one monitor without DDC/CI -> explain how to fix it
     readonly Font fTitle, fLabel, fValue, fIcon;
     Point target, pos;
     int visibleBottom = int.MaxValue; // bottom of the work area: anything below is clipped
@@ -377,8 +378,9 @@ class BrightnessPanel : Form
             debounce[i] = t;
         }
 
+        showHint = monitors.Exists(delegate (Monitor m) { return !m.Supported; });
         W = S(380);
-        H = S(Header + n * RowH + SepH + 8);
+        H = S(Header + n * RowH + SepH + 8 + (showHint ? FooterH : 0));
         fTitle = new Font(FontOr("Segoe UI Variable Display Semib", "Segoe UI Semibold"), 11f * s, GraphicsUnit.Point);
         fLabel = new Font(FontOr("Segoe UI Variable Text", "Segoe UI"), 9f * s, GraphicsUnit.Point);
         fValue = new Font(FontOr("Segoe UI Variable Text", "Segoe UI"), 9.5f * s, GraphicsUnit.Point);
@@ -572,8 +574,41 @@ class BrightnessPanel : Form
                 g.DrawLine(pen, S(Pad), sepY, W - S(Pad), sepY);
 
             for (int i = 0; i < values.Length; i++) DrawRow(g, i, fg);
+            if (showHint) DrawHint(g, fg);
         }
         return b;
+    }
+
+    // Footer with a short how-to for monitors whose slider is locked.
+    void DrawHint(Graphics g, Color fg)
+    {
+        int top = RowTop(values.Length) + S(2);
+        Color fg2 = Color.FromArgb(light ? 165 : 200, fg);
+        using (Pen pen = new Pen(light ? Color.FromArgb(22, 0, 0, 0) : Color.FromArgb(26, 255, 255, 255), 1f))
+            g.DrawLine(pen, S(Pad), top, W - S(Pad), top);
+
+        StringFormat center = new StringFormat();
+        center.Alignment = StringAlignment.Center;
+        center.LineAlignment = StringAlignment.Center;
+        using (SolidBrush br = new SolidBrush(fg2))
+        {
+            // E946 = info icon
+            g.DrawString("", fIcon, br, new RectangleF(S(Pad) - S(2), top + S(8), S(26), S(26)), center);
+            g.DrawString(L.T("Locked slider: turn on DDC/CI in the monitor's own menu. Not every monitor supports it.",
+                             "Gesperrter Regler: DDC/CI im Menü des Monitors einschalten. Nicht jeder Monitor kann das."),
+                fLabel, br, new RectangleF(TrackX0, top + S(6), W - TrackX0 - S(Pad), S(FooterH - 8)));
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        // Stop pending timers so nothing is sent to monitor handles that are about to be released.
+        if (disposing)
+        {
+            anim.Stop();
+            foreach (System.Windows.Forms.Timer t in debounce) t.Stop();
+        }
+        base.Dispose(disposing);
     }
 
     void DrawRow(Graphics g, int i, Color fg)
@@ -713,6 +748,7 @@ class TrayApp : ApplicationContext
     readonly NotifyIcon icon = new NotifyIcon();
     readonly Control invoker = new Control(); // for calls from other threads
     readonly ToolStripMenuItem autostart;
+    readonly System.Windows.Forms.Timer redetect = new System.Windows.Forms.Timer();
     List<Monitor> monitors;
     BrightnessPanel panel;
 
@@ -733,7 +769,7 @@ class TrayApp : ApplicationContext
             menu.Items.Add(L.T("All to ", "Alle auf ") + p + " %", null, delegate { SetAll(preset); });
         }
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(L.T("Re-detect monitors", "Monitore neu erkennen"), null, delegate { Reload(); });
+        menu.Items.Add(L.T("Re-detect monitors", "Monitore neu erkennen"), null, delegate { Reload(true); });
         autostart = new ToolStripMenuItem(L.T("Start with Windows", "Mit Windows starten"), null, delegate { ToggleAutostart(); });
         autostart.Checked = AutostartEnabled();
         menu.Items.Add(autostart);
@@ -755,7 +791,19 @@ class TrayApp : ApplicationContext
         waiter.IsBackground = true;
         waiter.Start();
 
+        // Monitor plugged in/out or switched on/off -> Windows reports a display change.
+        // Wait a moment until the monitor answers on DDC/CI, then reload the list.
+        redetect.Interval = 2000;
+        redetect.Tick += delegate { redetect.Stop(); Reload(panel.Visible); };
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
+
         if (showPanel) panel.ShowNearTray();
+    }
+
+    void OnDisplayChanged(object sender, EventArgs e)
+    {
+        // May arrive on another thread: restart the delay on the UI thread.
+        invoker.BeginInvoke((MethodInvoker)delegate { redetect.Stop(); redetect.Start(); });
     }
 
     void BuildPanel()
@@ -782,14 +830,14 @@ class TrayApp : ApplicationContext
         });
     }
 
-    void Reload()
+    void Reload(bool showAfter)
     {
         panel.Dispose();
         Monitors.Release();
         monitors = Monitors.Load();
         BuildPanel();
         UpdateTooltip();
-        panel.ShowNearTray();
+        if (showAfter) panel.ShowNearTray();
     }
 
     void UpdateTooltip()
@@ -831,6 +879,8 @@ class TrayApp : ApplicationContext
 
     void Quit()
     {
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
+        redetect.Stop();
         icon.Visible = false;
         icon.Dispose();
         Monitors.Release();
@@ -889,6 +939,12 @@ static class Program
                     Console.WriteLine("{0}  {1,-28} {2}", i + 1, m.Name, m.Supported ? m.Percent + " %" : L.T("no DDC/CI", "kein DDC/CI"));
                 }
                 Console.WriteLine();
+                if (monitors.Exists(delegate (Monitor m) { return !m.Supported; }))
+                {
+                    Console.WriteLine(L.T("No DDC/CI: turn it on in the monitor's own menu. Not every monitor supports it.",
+                                          "Kein DDC/CI: im Menü des Monitors einschalten. Nicht jeder Monitor kann das."));
+                    Console.WriteLine();
+                }
                 Console.WriteLine(usage);
                 return 0;
             }
